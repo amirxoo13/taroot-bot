@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import random
+import secrets
 import sys
 from pathlib import Path
 
@@ -144,7 +145,13 @@ def draw_spread(
         raise ValueError(f"unknown spread: {spread}")
     positions = SPREADS[spread]
     cards = pick_pool(load_cards(), tradition)
-    rng = random.Random(seed)
+    # A real draw (seed=None) uses secrets.SystemRandom: every sample()/
+    # choice() call reads OS hardware entropy directly, with no persisted
+    # PRNG state to derive from — this is the same class of randomness
+    # used for cryptographic keys, not a seeded algorithm. The deterministic
+    # random.Random(seed) path is used ONLY when a caller (e.g. /rooz's
+    # daily card) explicitly wants the same result reproduced.
+    rng = random.Random(seed) if seed is not None else secrets.SystemRandom()
     chosen = rng.sample(cards, k=len(positions))
     packed = []
     for pos, card in zip(positions, chosen):
@@ -297,7 +304,7 @@ def main() -> int:
     p.add_argument("--spread", default="three-ppf", choices=sorted(SPREADS))
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--reversals", action="store_true")
-    p.add_argument("--tradition", default="rws", choices=("rws", "marseille", "major-only"))
+    p.add_argument("--tradition", default="rws", choices=("rws", "major-only"))
     p.add_argument("--question", default="")
     args = p.parse_args()
     pack = draw_spread(

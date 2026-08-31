@@ -31,8 +31,11 @@ CATEGORIES: dict[str, dict] = {
 
 TRADITION_META: dict[str, dict] = {
     "rws": {"label": "🎴 رایدر-وایت (استاندارد)"},
-    "marseille": {"label": "🇫🇷 مارسی"},
     "major-only": {"label": "🌟 فقط آرکانای بزرگ"},
+    # "marseille" intentionally omitted: no legitimate structured Marseille
+    # meanings dataset was found (searched — only card scans exist
+    # publicly, not per-card interpretations). Add it back only once a
+    # real, sourced Marseille dataset is wired in — never relabel RWS data.
 }
 
 SUIT_FA: dict[str, str] = {
