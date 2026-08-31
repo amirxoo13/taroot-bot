@@ -3,4 +3,5 @@
 __pycache__/
 *.pyc
 tarot-bot/assets/cards/
+tarot/references/cards.json
 *.tgz

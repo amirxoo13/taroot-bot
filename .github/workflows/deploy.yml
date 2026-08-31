@@ -1,41 +1,109 @@
-name: deploy-tarot-bot
+# Deploys tarot-bot to the production server on every push to `main`.
+#
+# How it works:
+#   1. Syncs tarot/ and tarot-bot/ to the server via rsync-over-SSH, as the
+#      unprivileged `deploy` user (never root).
+#   2. Writes tarot-bot/.env on the server from the ENV_FILE secret (the
+#      file's content never appears in this repo or in job logs).
+#   3. (Re)installs Python deps, fetches the card dataset, restarts the
+#      systemd service via a narrowly-scoped passwordless sudo rule.
+#
+# One-time prerequisites on the server (done manually, outside this
+# workflow — see README.md):
+#   - python3 + python3-venv installed
+#   - /opt/tarot and /opt/tarot-bot owned by the `deploy` user
+#   - `deploy` has NOPASSWD sudo for exactly:
+#       /bin/systemctl restart tarot-bot
+#       /bin/systemctl status tarot-bot
+#   - /etc/systemd/system/tarot-bot.service installed + `systemctl enable`
+#   - Nginx + TLS cert configured (deploy/nginx-tarot-bot.conf) on 8443
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_SSH_KEY   private key matching the `deploy` user's authorized_keys
+#   DEPLOY_HOST      155.103.71.163
+#   DEPLOY_USER      deploy
+#   ENV_FILE         full contents of tarot-bot/.env (all tokens live here
+#                    only — never committed to this repo)
+
+name: Deploy tarot-bot
 
 on:
   push:
     branches: [main]
-  workflow_dispatch:
+    paths:
+      - "tarot/**"
+      - "tarot-bot/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-tarot-bot
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Start ssh-agent
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-
-      - name: Trust host key
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-        run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-
-      - name: Sync code and restart tarot-bot
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          ENV_FILE: ${{ secrets.ENV_FILE }}
+      - name: Set up deploy SSH key
         run: |
           set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sync tarot/ (card + spread data)
+        run: |
           rsync -az --delete \
-            --exclude '.git' --exclude '.venv' --exclude '.env' --exclude 'assets/cards' --exclude '__pycache__' \
-            tarot-bot/ "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/tarot-bot/"
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
+            tarot/ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/tarot/"
+
+      - name: Sync tarot-bot/ (bot code — never touches .env or downloaded assets)
+        run: |
           rsync -az --delete \
-            --exclude '.git' --exclude '__pycache__' \
-            tarot/ "${DEPLOY_USER}@${DEPLOY_HOST}:/opt/tarot/"
-          printf '%s\n' "$ENV_FILE" | ssh "${DEPLOY_USER}@${DEPLOY_HOST}" 'cat > /opt/tarot-bot/.env && chmod 600 /opt/tarot-bot/.env'
-          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" 'sudo systemctl restart tarot-bot && sudo systemctl is-active tarot-bot'
+            --exclude ".env" \
+            --exclude ".venv/" \
+            --exclude "assets/cards/" \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
+            tarot-bot/ "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/opt/tarot-bot/"
+
+      - name: Write .env on server
+        env:
+          ENV_CONTENT: ${{ secrets.ENV_FILE }}
+        run: |
+          printf '%s\n' "$ENV_CONTENT" | ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            'umask 077 && cat > /opt/tarot-bot/.env'
+
+      - name: Install deps, fetch dataset, restart service
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/tarot-bot
+          [ -d .venv ] || python3 -m venv .venv
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -r assets/requirements.txt
+
+          export TAROT_SKILL_DIR=/opt/tarot
+          python3 /opt/tarot/scripts/fetch_cards.py
+
+          # Card images are large and flaky to fetch (archive.org/wikimedia);
+          # only (re)download if clearly incomplete, and never fail the deploy
+          # over missing scans — the bot degrades to text-only per card.
+          have=$(ls -1 assets/cards 2>/dev/null | wc -l)
+          if [ "$have" -lt 78 ]; then
+            .venv/bin/python scripts/download_cards.py || true
+          fi
+
+          sudo /bin/systemctl restart tarot-bot
+          sleep 2
+          sudo /bin/systemctl status tarot-bot --no-pager -l | head -20
+          REMOTE
+
+      - name: Clean up SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
