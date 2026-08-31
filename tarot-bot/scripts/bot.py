@@ -23,6 +23,7 @@ from telegram import (
     BotCommand,
     InlineKeyboardMarkup,
     InputMediaPhoto,
+    ReplyKeyboardRemove,
     Update,
 )
 from telegram.constants import ChatAction, ParseMode
@@ -169,6 +170,15 @@ async def _render_gallery(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
 # --- top-level commands ---------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # This bot only ever uses inline keyboards. If an older version of the
+    # bot (on this same token) left a persistent custom reply-keyboard
+    # behind, clear it once, silently, so it stops confusing people.
+    chat_id = update.effective_chat.id
+    try:
+        cleanup = await context.bot.send_message(chat_id, "🧹", reply_markup=ReplyKeyboardRemove())
+        await context.bot.delete_message(chat_id, cleanup.message_id)
+    except Exception:
+        logger.debug("reply-keyboard cleanup skipped", exc_info=True)
     await update.effective_message.reply_html(texts.WELCOME, reply_markup=keyboards.main_menu())
 
 
@@ -418,6 +428,13 @@ async def cb_confirm_draw(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 
+async def cb_unknown_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.effective_message.reply_text(
+        "متوجه نشدم 🤔 لطفاً از دکمه‌های زیر پیام‌ها استفاده کنید:",
+        reply_markup=keyboards.main_menu(),
+    )
+
+
 # --- error handling ---------------------------------------------------
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -510,6 +527,12 @@ def build_application(cfg: Config) -> Application:
     application.add_handler(CallbackQueryHandler(cb_gallery_page, pattern="^gal:page:"))
     application.add_handler(CallbackQueryHandler(cb_gallery_card, pattern="^gal:card:"))
     application.add_handler(CallbackQueryHandler(cb_noop, pattern="^noop$"))
+
+    # Lower-priority catch-all: anything not consumed above (stray text,
+    # legacy reply-keyboard button presses from earlier bot versions, etc.)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, cb_unknown_text), group=1
+    )
 
     application.add_error_handler(on_error)
     return application

@@ -10,7 +10,8 @@ EnvironmentFile=/opt/tarot-bot/.env
 ExecStart=/opt/tarot-bot/.venv/bin/python /opt/tarot-bot/scripts/bot.py
 Restart=always
 RestartSec=5
-User=root
+User=deploy
+Group=deploy
 
 [Install]
 WantedBy=multi-user.target
