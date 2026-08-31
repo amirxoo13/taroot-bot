@@ -439,6 +439,11 @@ async def cb_confirm_draw(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await _send_cards(context, chat_id, pack["cards"])
 
+    if pack.get("true_random"):
+        await context.bot.send_message(
+            chat_id, "🌐 این کارت‌ها با منبع تصادف فیزیکی واقعی (نویز اتمسفری، random.org) کشیده شدند."
+        )
+
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
     status_msg = await context.bot.send_message(chat_id, texts.INTERPRETING)
     typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id))

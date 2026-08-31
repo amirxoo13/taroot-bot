@@ -11,6 +11,8 @@ import secrets
 import sys
 from pathlib import Path
 
+import truerandom
+
 MAJOR_FA = {
     0: "احمق",
     1: "جادوگر",
@@ -145,17 +147,34 @@ def draw_spread(
         raise ValueError(f"unknown spread: {spread}")
     positions = SPREADS[spread]
     cards = pick_pool(load_cards(), tradition)
-    # A real draw (seed=None) uses secrets.SystemRandom: every sample()/
-    # choice() call reads OS hardware entropy directly, with no persisted
-    # PRNG state to derive from — this is the same class of randomness
-    # used for cryptographic keys, not a seeded algorithm. The deterministic
-    # random.Random(seed) path is used ONLY when a caller (e.g. /rooz's
-    # daily card) explicitly wants the same result reproduced.
-    rng = random.Random(seed) if seed is not None else secrets.SystemRandom()
-    chosen = rng.sample(cards, k=len(positions))
+    k = len(positions)
+
+    used_true_random = False
+    if seed is not None:
+        # Deterministic path (e.g. /rooz's daily card) — reproducibility
+        # is the explicit point here, so this must stay a seeded PRNG.
+        rng = random.Random(seed)
+        chosen = rng.sample(cards, k=k)
+        rev_bits = [bool(reversals and rng.choice((True, False))) for _ in range(k)]
+    else:
+        # Real draw: try RANDOM.ORG (atmospheric-noise permutation + bits)
+        # first. Both fetches must succeed together, or we discard both
+        # and fall back entirely to secrets.SystemRandom() — never mix
+        # sources within one draw.
+        perm = truerandom.fetch_permutation(len(cards))
+        bits = truerandom.fetch_bits(k) if (perm is not None and reversals) else ([False] * k if perm is not None else None)
+        if perm is not None and bits is not None:
+            chosen = [cards[i] for i in perm[:k]]
+            rev_bits = bits
+            used_true_random = True
+        else:
+            rng = secrets.SystemRandom()
+            chosen = rng.sample(cards, k=k)
+            rev_bits = [bool(reversals and rng.choice((True, False))) for _ in range(k)]
+
     packed = []
-    for pos, card in zip(positions, chosen):
-        rev = bool(reversals and rng.choice((True, False)))
+    for pos, card, rev in zip(positions, chosen, rev_bits):
+        rev = bool(rev)
         item = {
             "position": pos,
             "id": card["id"],
@@ -183,6 +202,7 @@ def draw_spread(
         "reversals": reversals,
         "seed": seed,
         "question": question,
+        "true_random": used_true_random,
         "cards": packed,
     }
 
