@@ -1,0 +1,16 @@
+[Unit]
+Description=Persian Telegram tarot bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/tarot-bot
+EnvironmentFile=/opt/tarot-bot/.env
+ExecStart=/opt/tarot-bot/.venv/bin/python /opt/tarot-bot/scripts/bot.py
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target
