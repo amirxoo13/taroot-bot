@@ -76,7 +76,16 @@ def _card_caption(index: int, card: dict) -> str:
     position = html.escape(str(card["position"]))
     name_fa = html.escape(str(card["name_fa"]))
     name_en = html.escape(str(card["name"]))
-    return f"<b>{index}. {position}</b>\n{name_fa} ({name_en}) — {orient}"
+    lines = [f"<b>{index}. {position}</b>", f"{name_fa} ({name_en}) — {orient}"]
+    keywords = card.get("keywords") or []
+    if keywords:
+        lines.append(f"<i>{html.escape('، '.join(keywords))}</i>")
+    meaning = card.get("meaning") or ""
+    if meaning:
+        if len(meaning) > 300:
+            meaning = meaning[:297] + "..."
+        lines.append(html.escape(meaning))
+    return "\n".join(lines)
 
 
 def _card_detail_caption(card: dict) -> str:
@@ -128,6 +137,18 @@ async def _send_cards(context: ContextTypes.DEFAULT_TYPE, chat_id: int, cards: l
 
     if text_only:
         await context.bot.send_message(chat_id, "\n\n".join(text_only), parse_mode=ParseMode.HTML)
+
+
+async def _keep_typing(bot, chat_id: int) -> None:
+    """Telegram's typing indicator auto-expires after ~5s; refresh it while
+    we wait on a (potentially 10-60s) HF completion so the wait is visibly
+    alive, not silent."""
+    try:
+        while True:
+            await bot.send_chat_action(chat_id, ChatAction.TYPING)
+            await asyncio.sleep(4)
+    except asyncio.CancelledError:
+        pass
 
 
 async def _build_reading(pack: dict, hf_token_present: bool) -> tuple[str, bool]:
@@ -237,9 +258,18 @@ async def cmd_rooz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await context.bot.send_message(chat_id, header, parse_mode=ParseMode.HTML)
 
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
-    reading_text, used_fallback = await _build_reading(pack, bool(cfg.hf_token))
+    status_msg = await context.bot.send_message(chat_id, texts.INTERPRETING)
+    typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id))
+    try:
+        reading_text, used_fallback = await _build_reading(pack, bool(cfg.hf_token))
+    finally:
+        typing_task.cancel()
     if used_fallback:
         reading_text += texts.HF_UNAVAILABLE_NOTE
+    try:
+        await context.bot.delete_message(chat_id, status_msg.message_id)
+    except Exception:
+        pass
     for chunk in utils.chunk_text(reading_text):
         await context.bot.send_message(chat_id, chunk)
 
@@ -411,7 +441,11 @@ async def cb_confirm_draw(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await context.bot.send_chat_action(chat_id, ChatAction.TYPING)
     status_msg = await context.bot.send_message(chat_id, texts.INTERPRETING)
-    reading_text, used_fallback = await _build_reading(pack, bool(cfg.hf_token))
+    typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id))
+    try:
+        reading_text, used_fallback = await _build_reading(pack, bool(cfg.hf_token))
+    finally:
+        typing_task.cancel()
     if used_fallback:
         reading_text += texts.HF_UNAVAILABLE_NOTE
 
